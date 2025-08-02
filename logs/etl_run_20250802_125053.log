@@ -1,0 +1,15 @@
+2025-08-02 12:50:53,326 [INFO] ===== ETL Run Started at 20250802_125053 =====
+2025-08-02 12:50:53,328 [INFO] Extracting tasks from PostgreSQL table `source_tasks`...
+2025-08-02 12:50:53,525 [ERROR] Failed to extract from database: column "userid" does not exist
+LINE 1: SELECT id, title, userId, completed FROM source_tasks
+                          ^
+HINT:  Perhaps you meant to reference the column "source_tasks.user_id".
+
+2025-08-02 12:50:53,527 [INFO] Transforming tasks with completion threshold...
+2025-08-02 12:50:53,527 [INFO] 0 tasks passed the threshold filter.
+2025-08-02 12:50:53,528 [INFO] Saving filtered tasks to CSV at output\filtered_tasks_20250802_125053.csv...
+2025-08-02 12:50:53,529 [INFO] CSV write completed.
+2025-08-02 12:50:53,824 [INFO] Loading data into PostgreSQL table `todo_metrics`...
+2025-08-02 12:50:53,893 [INFO] Data loaded into `todo_metrics` successfully.
+2025-08-02 12:50:53,894 [INFO] ETL pipeline completed successfully.
+2025-08-02 12:50:53,895 [INFO] =============================================
