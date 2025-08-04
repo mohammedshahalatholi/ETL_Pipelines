@@ -1,6 +1,6 @@
 import requests
 import csv
-import psycopg2
+import psycopg2r
 import logging
 import os
 from datetime import datetime
