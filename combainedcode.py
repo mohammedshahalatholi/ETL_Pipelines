@@ -1,7 +1,8 @@
 import psycopg2
-import cx_Oracle
+import oracledb
 import sys
 from datetime import datetime
+from sla_reporting import sla_reporting
 
 # === PostgreSQL Reporting DB Configuration ===
 DB_CONFIG = {
@@ -10,35 +11,22 @@ DB_CONFIG = {
     "user": "postgres",
     "password": "admin"
 }
-
 # === PXQ Pricing Logic ===
 def RU_basepricing(application_group):
     print(f"[INFO] PXQ Pricing for: {application_group}")
-
     try:
         conn = psycopg2.connect(**DB_CONFIG)
         cur = conn.cursor()
 
-        # Fetch dupricing_model as yearly_price
         cur.execute("""
-            SELECT dupricing_model FROM pricingmodel_table
-            WHERE application_group_name = %s AND pricing_model = 'PXQ'
+            SELECT * FROM pricingmodel_table
+            WHERE application_group_name = %s
         """, (application_group,))
         row = cur.fetchone()
-
-        if not row:
-            print(f"[WARNING] No dupricing_model found for PXQ group: {application_group}")
-            return
-
-        yearly_price = row[0]
-        print(f"[INFO] Fetched yearly_price (dupricing_model): {yearly_price}")
-
         cur.close()
         conn.close()
 
-        # Execute mapping logic and then insert pricing
         Databasemapping(application_group)
-        reporting(application_group, yearly_price)
 
     except Exception as e:
         print(f"[ERROR] Failed in RU_basepricing for {application_group}: {e}")
@@ -53,17 +41,14 @@ def matrix_pricing(application_group, year_input):
         WHERE application_group_name = %s
     """, (application_group,))
     row = cur.fetchone()
-
     if not row:
         print(f"[WARNING] No matrix data for: {application_group}")
         return
-
     price_year1, price_year2 = row
-
     if int(year_input) == 2023:
-        yearly_price = price_year1  # year 2023
+        yearly_price = price_year1
     elif int(year_input) == 2022:
-        yearly_price = price_year2  # year 2022
+        yearly_price = price_year2
     else:
         print(f"[WARNING] Year {year_input} doesn't match 2022 or 2023")
         return
@@ -75,18 +60,39 @@ def matrix_pricing(application_group, year_input):
     conn.close()
 
 # === Insert Daily and Monthly Prices ===
-def reporting(application_group, yearly_price):
+def RU_reporting(application_group, platform, Ru_measured):
     conn = psycopg2.connect(**DB_CONFIG)
     cur = conn.cursor()
-
-    daily_price = yearly_price / 365
+    daily_price = Ru_measured / 365
     cur.execute("""
         INSERT INTO daily_table (application_group_name, date, price)
         VALUES (%s, CURRENT_DATE, %s)
     """, (application_group, daily_price))
 
     if datetime.now().day == 1:
-        monthly_price = yearly_price / 12
+        monthly_price = Ru_measured / 12
+        cur.execute("""
+            INSERT INTO monthly_table (application_group_name, month, price)
+            VALUES (%s, TO_CHAR(CURRENT_DATE, 'YYYY-MM'), %s)
+        """, (application_group, monthly_price))
+
+    conn.commit()
+    cur.close()
+    conn.close()
+
+    print(f"[SUCCESS] Inserted daily{' and monthly' if datetime.now().day == 1 else ''} pricing for {application_group}")
+
+def reporting(application_group, year_input):
+    conn = psycopg2.connect(**DB_CONFIG)
+    cur = conn.cursor()
+    daily_price = year_input / 365
+    cur.execute("""
+        INSERT INTO daily_table (application_group_name, date, price)
+        VALUES (%s, CURRENT_DATE, %s)
+    """, (application_group, daily_price))
+
+    if datetime.now().day == 1:
+        monthly_price = year_input / 12
         cur.execute("""
             INSERT INTO monthly_table (application_group_name, month, price)
             VALUES (%s, TO_CHAR(CURRENT_DATE, 'YYYY-MM'), %s)
@@ -108,7 +114,7 @@ def fetch_driver_details(cursor, ref_number):
     return cursor.fetchone()
 
 # === Execute External SQL Query ===
-def execute_query(engine, driver_path, username, password, query):
+def execute_query(engine, driver_path, username, password, query, purpose):
     try:
         if engine.lower() == "postgresql":
             host, port, dbname = driver_path.split(":")
@@ -120,8 +126,9 @@ def execute_query(engine, driver_path, username, password, query):
                 password=password
             )
         elif engine.lower() == "oracle":
-            dsn = cx_Oracle.makedsn(*driver_path.split(":", 2))
-            conn = cx_Oracle.connect(user=username, password=password, dsn=dsn)
+            host, port, service = driver_path.split(":")
+            dsn = oracledb.makedsn(host, port, service_name=service)
+            conn = oracledb.connect(user=username, password=password, dsn=dsn)
         else:
             print(f"[ERROR] Unsupported database engine: {engine}")
             return
@@ -131,8 +138,13 @@ def execute_query(engine, driver_path, username, password, query):
         cur.execute(query)
         rows = cur.fetchall()
         print(f"[SUCCESS] Retrieved {len(rows)} records.")
+
         for row in rows:
-            print(row)
+            app_group, platform, RU_measured = row
+            if purpose == 'pricing':
+                RU_reporting(app_group, platform, RU_measured)
+            else:
+                sla_reporting(app_group, platform, RU_measured)
 
         cur.close()
         conn.close()
@@ -166,8 +178,8 @@ def Databasemapping(application_group):
                 print(f"[ERROR] No DB driver found for reference: {ref_num}")
                 continue
 
-            engine, path, _, user, pwd = driver_details
-            execute_query(engine, path, user, pwd, SQLquery)
+            engine, path, user, pwd,SQLquery = driver_details
+            execute_query(engine, path, user, pwd, SQLquery,)
 
         cur.close()
         conn.close()
@@ -184,8 +196,8 @@ def process_pricing_model(year_input):
     cur.execute("SELECT application_group_name, pricing_model FROM pricingmodel_table")
     rows = cur.fetchall()
 
-    for application_group, pricing_model in rows:
-        print(f"[PROCESSING] {application_group} | Model: {pricing_model}")
+    for application_group, pricing_model, purpose in rows:
+        print(f"[PROCESSING] {application_group} | Model: {pricing_model} ")
         if pricing_model == 'PXQ':
             RU_basepricing(application_group)
         else:
@@ -200,4 +212,6 @@ if __name__ == "__main__":
         print("Usage: python pricing_script.py <year>")
         sys.exit(1)
 
-    input_year = sys.argv[1]_
+    input_year = sys.argv[1]
+    process_pricing_model(input_year)
+    process_sla_model(input_year)
